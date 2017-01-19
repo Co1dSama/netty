@@ -614,7 +614,33 @@ public class ReferenceCountedOpenSslEngine extends SSLEngine implements Referenc
                 }
             }
 
-            if (dst.remaining() < MAX_ENCRYPTED_PACKET_LENGTH) {
+            int endOffset = offset + length;
+            int srcsLen = 0;
+
+            for (int i = offset; i < endOffset; ++i) {
+                final ByteBuffer src = srcs[i];
+                if (src == null) {
+                    throw new IllegalArgumentException("srcs[" + i + "] is null");
+                }
+                if (srcsLen == MAX_PLAINTEXT_LENGTH) {
+                    continue;
+                }
+
+                srcsLen += src.remaining();
+                if (srcsLen > MAX_PLAINTEXT_LENGTH) {
+                    // If srcLen > MAX_PLAINTEXT_LENGTH just set it to MAX_PLAINTEXT_LENGTH.
+                    // This also help us to guard against overflow.
+                    // We not break out here as we still need to check for null entries in srcs[].
+                    srcsLen = MAX_PLAINTEXT_LENGTH;
+                }
+            }
+
+            int maxEncryptedLen = calculateOutNetBufSize(srcsLen);
+
+            if (MAX_ENCRYPTED_PACKET_LENGTH < maxEncryptedLen) {
+                maxEncryptedLen = MAX_ENCRYPTED_PACKET_LENGTH;
+            }
+            if (dst.remaining() < maxEncryptedLen) {
                 // Can not hold the maximum packet so we need to tell the caller to use a bigger destination
                 // buffer.
                 return new SSLEngineResult(BUFFER_OVERFLOW, getHandshakeStatus(), 0, 0);
@@ -622,13 +648,9 @@ public class ReferenceCountedOpenSslEngine extends SSLEngine implements Referenc
             // There was no pending data in the network BIO -- encrypt any application data
             int bytesProduced = 0;
             int bytesConsumed = 0;
-            int endOffset = offset + length;
 
             loop: for (int i = offset; i < endOffset; ++i) {
                 final ByteBuffer src = srcs[i];
-                if (src == null) {
-                    throw new IllegalArgumentException("srcs[" + i + "] is null");
-                }
                 while (src.hasRemaining()) {
                     final SSLEngineResult pendingNetResult;
                     // Write plaintext application data to the SSL engine
@@ -1659,6 +1681,10 @@ public class ReferenceCountedOpenSslEngine extends SSLEngine implements Referenc
 
     private boolean isDestroyed() {
         return destroyed != 0;
+    }
+
+    static int calculateOutNetBufSize(int pendingBytes) {
+        return Math.min(MAX_ENCRYPTED_PACKET_LENGTH, MAX_ENCRYPTION_OVERHEAD_LENGTH + pendingBytes);
     }
 
     private final class OpenSslSession implements SSLSession, ApplicationProtocolAccessor {
